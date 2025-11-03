@@ -1,11 +1,4 @@
-# ==== Imports ====
-
-# Standard library
 import os
-from io import BytesIO
-
-# Third-party
-import requests
 import pandas as pd
 import dash
 from dash import dcc, html, dash_table, Input, Output, State, ctx
@@ -42,11 +35,17 @@ INTRO_SENTENCES = [
 # Carga de datos
 # ======================
 def load_data_from_excel(path_excel: str):
-    xls = pd.ExcelFile(path_excel)
-    df = pd.read_excel(xls, SHEET_FALLEC, dtype=str)
-    cie = pd.read_excel(xls, SHEET_DESC, dtype=str)
-    dane = pd.read_excel(xls, SHEET_DEPMUN, dtype=str)
-    geo = pd.read_excel(xls, SHEET_UBI, dtype=str)
+    # Verificación explícita para evitar que falle al importar el módulo
+    if not os.path.isfile(path_excel):
+        raise FileNotFoundError(f"No existe el archivo esperado: {path_excel}")
+
+    # Fuerza engine para .xlsx y evita problemas de inferencia cuando no hay extensión o hay buffers
+    xls = pd.ExcelFile(path_excel, engine="openpyxl")
+
+    df   = pd.read_excel(xls, SHEET_FALLEC, dtype=str, engine="openpyxl")
+    cie  = pd.read_excel(xls, SHEET_DESC,   dtype=str, engine="openpyxl")
+    dane = pd.read_excel(xls, SHEET_DEPMUN, dtype=str, engine="openpyxl")
+    geo  = pd.read_excel(xls, SHEET_UBI,    dtype=str, engine="openpyxl")
 
     for col in ["AÑO", "MES"]:
         if col in df.columns:
@@ -81,8 +80,12 @@ def load_data_from_excel(path_excel: str):
 
     return df
 
-df = load_data_from_excel(PATH_EXCEL)
-
+# Intento de carga al inicio, pero sin tumbar el proceso si falla.
+try:
+    df = load_data_from_excel(PATH_EXCEL)
+except Exception as e:
+    print(f"[WARN] No se pudo cargar el Excel '{PATH_EXCEL}': {e}")
+    df = pd.DataFrame()  # continúa con DF vacío para que la app arranque
 
 # ======================
 # Utilidades 
@@ -178,12 +181,12 @@ def add_total_annotation(fig, total_value):
 # App y layout
 # ======================
 external_stylesheets = [dbc.themes.FLATLY]
-app = dash(
+app = dash.Dash(                # <-- corregido (antes: app = dash(...))
     __name__,
     title=PAGE_TITLE,
     external_stylesheets=external_stylesheets,
     suppress_callback_exceptions=True,
-    serve_locally=True,              
+    serve_locally=True,
 )
 server = app.server
 
@@ -227,7 +230,7 @@ sidebar = dbc.Offcanvas(
     backdrop=False,
     scrollable=True,
     style={"backgroundColor": COLOR_BG1, "color": COLOR_TEXT, "width": "320px"},
-    children=build_filters(df)
+    children=build_filters(df)  # si df está vacío, el contenedor se renderiza sin opciones (seguro)
 )
 
 # Navbar 
@@ -347,7 +350,7 @@ def toggle_sidebar(n, is_open):
     prevent_initial_call=True
 )
 def clear_all(n_clicks):
-    return None, None, None, None, None, None, None, None, 
+    return None, None, None, None, None, None, None, None,
 
 def apply_filters(df_, v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_clicked, mun_clicked):
     t = df_.copy()
@@ -507,7 +510,6 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
     data_top = top_10_causas(fdf_for_top).copy()
 
     if data_top.empty:
-        # asegure estructura mínima
         for col in ["Código", "Nombre", "Total de casos"]:
             if col not in data_top.columns:
                 data_top[col] = []
@@ -535,7 +537,7 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
         ]
     )
 
-    # --- BARRAS APILADAS SEXO (etiquetas "Hombre/Mujer/No especifica" y cantidad)
+    # --- BARRAS APILADAS SEXO
     data_sexo = barras_apiladas_sexo_por_dpto(fdf)
     orden_dep = (data_sexo.groupby("DEPARTAMENTO")["Total"]
                  .sum().sort_values(ascending=False).index.tolist()) if not data_sexo.empty else []
@@ -547,9 +549,8 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
     fig_sexo.update_xaxes(categoryorder="array", categoryarray=orden_dep,
                           tickangle=-45, automargin=True)
 
-    # Etiquetas personalizadas por traza con separador de miles y nombre de sexo
     for tr in fig_sexo.data:
-        valores = [ _format_miles(int(v)) for v in tr.y ]
+        valores = [_format_miles(int(v)) for v in tr.y] if hasattr(tr, "y") and tr.y is not None else []
         tr.text = valores
         tr.textposition = "inside"
         tr.textfont = dict(size=11, color="white")
@@ -566,7 +567,7 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
     total_sexo = int(data_sexo["Total"].sum()) if not data_sexo.empty else 0
     fig_sexo = add_total_annotation(fig_sexo, total_sexo)
 
-    # --- HISTOGRAMA Rango_edad_aproximado (texto "Total")
+    # --- HISTOGRAMA Rango_edad_aproximado
     data_hist_raw = hist_por_rango_edad(fdf)
     tmp = data_hist_raw.copy()
     if not tmp.empty:
