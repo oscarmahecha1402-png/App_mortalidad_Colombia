@@ -39,134 +39,49 @@ INTRO_SENTENCES = [
 ]
 
 # ======================
-# Carga de datos desde OneDrive (robusta con timeout y cache)
+# Carga de datos
 # ======================
+def load_data_from_excel(path_excel: str):
+    xls = pd.ExcelFile(path_excel)
+    df = pd.read_excel(xls, SHEET_FALLEC, dtype=str)
+    cie = pd.read_excel(xls, SHEET_DESC, dtype=str)
+    dane = pd.read_excel(xls, SHEET_DEPMUN, dtype=str)
+    geo = pd.read_excel(xls, SHEET_UBI, dtype=str)
 
-URL_FALLEC = "https://1drv.ms/x/c/759088dd00b5600b/ESISdtT77ZpPnmMYViyX6fwBQP4uUYscj6hYzMjWV37XaA?e=V0AAoO"
-URL_DESC   = "https://1drv.ms/x/c/759088dd00b5600b/EcHFbmwC_WZIkdbGanC1_ooBsUFkLfJVIRQuExvZdPrd3w?e=2L6MJG"
-URL_DEPMUN = "https://1drv.ms/x/c/759088dd00b5600b/EfTflLa692xBsPl7eu_49uMBqV-U8t_lMxuhh26vVBwKYQ?e=PKaVeY"
-URL_UBI    = "https://1drv.ms/x/c/759088dd00b5600b/ERUh2KpkdUFMs-bnv4gCyyABRvdiuLzyTW7iHbEhwEqqnA?e=nUWFdW"
-
-import io
-import os
-import logging
-from functools import lru_cache
-import requests
-import pandas as pd
-
-# Sesión HTTP con User-Agent para evitar bloqueos tontos
-_session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-def _read_excel_bytes(b, sheet_name=None, usecols=None):
-    return pd.read_excel(
-        io.BytesIO(b),
-        sheet_name=sheet_name,
-        dtype=str,
-        usecols=usecols,
-        engine="openpyxl",
-    )
-
-def load_excel_from_onedrive(url, sheet_name=None, usecols=None):
-    """Descarga un Excel desde OneDrive y devuelve un DataFrame."""
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-
-    # (opcional) verificación rápida de que lo recibido parece un XLSX (ZIP)
-    if not r.content.startswith(b"PK"):
-        raise ValueError("La URL de OneDrive no devolvió un .xlsx válido. Revisa el enlace o usa el fallback local.")
-
-    with BytesIO(r.content) as f:
-        return pd.read_excel(
-            f,
-            sheet_name=sheet_name,
-            dtype=str,
-            usecols=usecols,
-            engine="openpyxl",   # <- CLAVE
-        )
-    return _read_excel_bytes(r.content, sheet_name=sheet_name, usecols=usecols)
-
-@lru_cache(maxsize=1)
-def load_data():
-    """
-    Carga y unifica todas las fuentes de datos.
-    - Cachea la carga para no repetir descargas en cada request.
-    - Incluye fallback a archivo local opcional (data/datos.xlsx) si existe.
-    """
-    usecols_fallec = [
-        "AÑO", "MES", "DEPARTAMENTO", "MUNICIPIO",
-        "SEXO", "COD_MUERTE", "Rango_edad_aproximado"
-    ]
-
-    # Fallback local (opcional, útil en desarrollo)
-    local_xlsx = os.path.join(os.path.dirname(__file__), "data", "datos.xlsx")
-    if os.path.exists(local_xlsx):
-        logging.info("Cargando Excel LOCAL: %s", local_xlsx)
-        df = pd.read_excel(
-            local_xlsx,
-            sheet_name="Fallecimientos",
-            dtype=str,
-            usecols=usecols_fallec,
-            engine="openpyxl",
-        )
-        cie = None
-        dane = None
-        geo = None
-    else:
-        logging.info("Descargando Excels desde OneDrive…")
-        df  = load_excel_from_onedrive(URL_FALLEC, sheet_name="Fallecimientos", usecols=usecols_fallec)
-        cie = load_excel_from_onedrive(URL_DESC,   sheet_name="Descripcion_cod_fall")
-        dane= load_excel_from_onedrive(URL_DEPMUN, sheet_name="Dep_mun")
-        geo = load_excel_from_onedrive(URL_UBI,    sheet_name="Ubi_Dep_mun")
-
-    # Conversión de tipo segura
     for col in ["AÑO", "MES"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Merge con catálogo CIE (descripcion por COD_MUERTE)
-    if cie is not None and "COD_MUERTE" in df.columns and "COD_MUERTE" in cie.columns:
+    if {"COD_DEPARTAMENTO","COD_MUNICIPIO","DEPARTAMENTO","MUNICIPIO"}.issubset(dane.columns):
+        df = df.merge(
+            dane[["COD_DEPARTAMENTO","COD_MUNICIPIO","DEPARTAMENTO","MUNICIPIO"]].drop_duplicates(),
+            on=["COD_DEPARTAMENTO","COD_MUNICIPIO"], how="left"
+        )
+
+    if "COD_MUERTE" in df.columns and "COD_MUERTE" in cie.columns:
         col_desc4 = None
         for c in cie.columns:
-            # Busca una columna de descripción (ajusta si tu nombre exacto es distinto)
-            if "descripcion" in c.lower() and ("4" in c or "cuatro" in c.lower()):
+            if "Descripcion" in c and "cuatro" in c:
                 col_desc4 = c
                 break
-        if col_desc4 is None:
-            # fallback: toma la primera columna de texto que no sea código
-            candidates = [c for c in cie.columns if c != "COD_MUERTE"]
-            if candidates:
-                col_desc4 = candidates[0]
         if col_desc4 is not None:
             df = df.merge(
                 cie[["COD_MUERTE", col_desc4]].rename(columns={col_desc4: "DESC_COD_MUERTE"}),
-                on="COD_MUERTE",
-                how="left",
+                on="COD_MUERTE", how="left"
             )
 
-    # Merge de geografía por MUNICIPIO (si existe info geo)
-    if geo is not None and {"Municipio", "Longitud", "Latitud"}.issubset(geo.columns) and "MUNICIPIO" in df.columns:
-        geo2 = geo[["Municipio", "Longitud", "Latitud", "Departamento"]].drop_duplicates()
-        df = df.merge(
-            geo2,
-            left_on="MUNICIPIO",
-            right_on="Municipio",
-            how="left",
-            suffixes=("", "_geo"),
-        )
-        if "Longitud" in df.columns:
-            df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
-        if "Latitud" in df.columns:
-            df["Latitud"]  = pd.to_numeric(df["Latitud"], errors="coerce")
+    if {"Municipio","Longitud","Latitud"}.issubset(geo.columns) and "MUNICIPIO" in df.columns:
+        geo2 = geo[["Municipio","Longitud","Latitud","Departamento"]].drop_duplicates()
+        df = df.merge(geo2, left_on="MUNICIPIO", right_on="Municipio", how="left", suffixes=("","_geo"))
+        df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
+        df["Latitud"]  = pd.to_numeric(df["Latitud"], errors="coerce")
 
-    # (Opcional) Orden/categoría de meses si ya traes 'Mes_texto' de algún paso previo
-    if "Mes_texto" in df.columns and 'MESES_ES' in globals():
+    if "Mes_texto" in df.columns:
         df["Mes_texto"] = pd.Categorical(df["Mes_texto"], categories=MESES_ES, ordered=True)
 
     return df
 
-# Carga del DataFrame principal
-df = load_data()
+df = load_data_from_excel(PATH_EXCEL)
 
 
 # ======================
