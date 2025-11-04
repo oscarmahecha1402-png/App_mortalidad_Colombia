@@ -6,14 +6,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 import dash_bootstrap_components as dbc
 
-# ======================
+# =======================
 # Configuración y colores
-# ======================
-PATH_EXCEL = os.getenv("PATH_EXCEL", "data/datos.xlsx")
-SHEET_FALLEC = os.getenv("SHEET_FALLEC", "Fallecimientos")
-SHEET_DESC   = os.getenv("SHEET_DESC", "Descripcion_cod_fall")
-SHEET_DEPMUN = os.getenv("SHEET_DEPMUN", "Dep_mun")
-SHEET_UBI    = os.getenv("SHEET_UBI", "Ubi_Dep_mun")
+# =======================
+
+# Rutas a los archivos individuales
+PATH_FALLEC = os.getenv("PATH_FALLEC", "data/Fallecimientos.xlsx")
+PATH_DESC   = os.getenv("PATH_DESC",   "data/Descripcion_cod_fall.xlsx")
+PATH_DEPMUN = os.getenv("PATH_DEPMUN", "data/Dep_mun.xlsx")
+PATH_UBI    = os.getenv("PATH_UBI",    "data/Ubi_Dep_mun.xlsx")
 
 COLOR_BTN  = "#FBB800"
 COLOR_TEXT = "#113250"
@@ -34,61 +35,73 @@ INTRO_SENTENCES = [
 # ======================
 # Carga de datos
 # ======================
-def load_data_from_excel(path_excel: str):
-    # Verificación explícita para evitar que falle al importar el módulo
-    if not os.path.isfile(path_excel):
-        raise FileNotFoundError(f"No existe el archivo esperado: {path_excel}")
+def load_data() -> pd.DataFrame:
+    """Carga los 4 libros Excel individuales y arma el DataFrame final."""
+    # Validaciones suaves (solo avisa si falta alguno)
+    for p in [PATH_FALLEC, PATH_DESC, PATH_DEPMUN, PATH_UBI]:
+        if not os.path.isfile(p):
+            print(f"[WARN] No se encontró el archivo: {p}")
 
-    # Fuerza engine para .xlsx y evita problemas de inferencia cuando no hay extensión o hay buffers
-    xls = pd.ExcelFile(path_excel, engine="openpyxl")
+    # Lecturas (engine explícito para evitar el error de Pandas)
+    df   = pd.read_excel(PATH_FALLEC, dtype=str, engine="openpyxl") if os.path.isfile(PATH_FALLEC) else pd.DataFrame()
+    cie  = pd.read_excel(PATH_DESC,   dtype=str, engine="openpyxl") if os.path.isfile(PATH_DESC)   else pd.DataFrame()
+    dane = pd.read_excel(PATH_DEPMUN, dtype=str, engine="openpyxl") if os.path.isfile(PATH_DEPMUN) else pd.DataFrame()
+    geo  = pd.read_excel(PATH_UBI,    dtype=str, engine="openpyxl") if os.path.isfile(PATH_UBI)    else pd.DataFrame()
 
-    df   = pd.read_excel(xls, SHEET_FALLEC, dtype=str, engine="openpyxl")
-    cie  = pd.read_excel(xls, SHEET_DESC,   dtype=str, engine="openpyxl")
-    dane = pd.read_excel(xls, SHEET_DEPMUN, dtype=str, engine="openpyxl")
-    geo  = pd.read_excel(xls, SHEET_UBI,    dtype=str, engine="openpyxl")
+    if df.empty:
+        return df
 
+    # Tipos numéricos seguros
     for col in ["AÑO", "MES"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if {"COD_DEPARTAMENTO","COD_MUNICIPIO","DEPARTAMENTO","MUNICIPIO"}.issubset(dane.columns):
+    # Mes en texto (si no existe)
+    if "Mes_texto" not in df.columns and "MES" in df.columns:
+        map_mes = {i + 1: MESES_ES[i] for i in range(12)}
+        df["Mes_texto"] = df["MES"].map(map_mes)
+    if "Mes_texto" in df.columns:
+        df["Mes_texto"] = pd.Categorical(df["Mes_texto"], categories=MESES_ES, ordered=True)
+
+    # Merge con DEPMUN (departamento y municipio)
+    if not dane.empty and {"COD_DEPARTAMENTO","COD_MUNICIPIO","DEPARTAMENTO","MUNICIPIO"}.issubset(dane.columns):
         df = df.merge(
             dane[["COD_DEPARTAMENTO","COD_MUNICIPIO","DEPARTAMENTO","MUNICIPIO"]].drop_duplicates(),
             on=["COD_DEPARTAMENTO","COD_MUNICIPIO"], how="left"
         )
 
-    if "COD_MUERTE" in df.columns and "COD_MUERTE" in cie.columns:
+    # Merge con descripciones CIE (buscar la columna 'Descripcion ... cuatro')
+    if not cie.empty and "COD_MUERTE" in df.columns and "COD_MUERTE" in cie.columns:
         col_desc4 = None
         for c in cie.columns:
-            if "Descripcion" in c and "cuatro" in c:
+            c_up = str(c).lower()
+            if "descripcion" in c_up and "cuatro" in c_up:
                 col_desc4 = c
                 break
-        if col_desc4 is not None:
+        if col_desc4:
             df = df.merge(
                 cie[["COD_MUERTE", col_desc4]].rename(columns={col_desc4: "DESC_COD_MUERTE"}),
                 on="COD_MUERTE", how="left"
             )
 
-    if {"Municipio","Longitud","Latitud"}.issubset(geo.columns) and "MUNICIPIO" in df.columns:
+    # Coordenadas por municipio
+    if not geo.empty and {"Municipio","Longitud","Latitud"}.issubset(geo.columns) and "MUNICIPIO" in df.columns:
         geo2 = geo[["Municipio","Longitud","Latitud","Departamento"]].drop_duplicates()
         df = df.merge(geo2, left_on="MUNICIPIO", right_on="Municipio", how="left", suffixes=("","_geo"))
         df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
         df["Latitud"]  = pd.to_numeric(df["Latitud"], errors="coerce")
 
-    if "Mes_texto" in df.columns:
-        df["Mes_texto"] = pd.Categorical(df["Mes_texto"], categories=MESES_ES, ordered=True)
-
     return df
 
 # Intento de carga al inicio, pero sin tumbar el proceso si falla.
 try:
-    df = load_data_from_excel(PATH_EXCEL)
+    df = load_data()
 except Exception as e:
-    print(f"[WARN] No se pudo cargar el Excel '{PATH_EXCEL}': {e}")
+    print(f"[WARN] No se pudo cargar los Excel: {e}")
     df = pd.DataFrame()  # continúa con DF vacío para que la app arranque
 
 # ======================
-# Utilidades 
+# Utilidades
 # ======================
 def _format_miles(n: int) -> str:
     try:
@@ -181,7 +194,7 @@ def add_total_annotation(fig, total_value):
 # App y layout
 # ======================
 external_stylesheets = [dbc.themes.FLATLY]
-app = dash.Dash(                # <-- corregido (antes: app = dash(...))
+app = dash.Dash(
     __name__,
     title=PAGE_TITLE,
     external_stylesheets=external_stylesheets,
@@ -230,10 +243,10 @@ sidebar = dbc.Offcanvas(
     backdrop=False,
     scrollable=True,
     style={"backgroundColor": COLOR_BG1, "color": COLOR_TEXT, "width": "320px"},
-    children=build_filters(df)  # si df está vacío, el contenedor se renderiza sin opciones (seguro)
+    children=build_filters(df)
 )
 
-# Navbar 
+# Navbar
 navbar = dbc.Navbar(
     dbc.Container([
         dbc.NavbarBrand(PAGE_TITLE, className="ms-2", style={"color": COLOR_TEXT}),
@@ -242,7 +255,7 @@ navbar = dbc.Navbar(
     style={"borderBottom": f"2px solid {COLOR_TEXT}20"}
 )
 
-# Bloque introductorio 
+# Bloque introductorio
 intro = dbc.Container(
     dbc.Card(
         dbc.CardBody(
@@ -360,14 +373,14 @@ def apply_filters(df_, v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango,
             return pd.Series([True]*len(series), index=series.index)
         return series.astype(str).isin([str(v) for v in values])
 
-    if "AÑO" in t.columns:                  t = t[_isin(t["AÑO"], v_ano)]
-    if "Mes_texto" in t.columns:            t = t[_isin(t["Mes_texto"], v_mes)]
-    if "DEPARTAMENTO" in t.columns:         t = t[_isin(t["DEPARTAMENTO"], v_dpto)]
-    if "MUNICIPIO" in t.columns:            t = t[_isin(t["MUNICIPIO"], v_mun)]
-    if "SEXO" in t.columns:                 t = t[_isin(t["SEXO"], v_sexo)]
-    if "Estado_civil" in t.columns:         t = t[_isin(t["Estado_civil"], v_ec)]
-    if "GRUPO_EDAD1" in t.columns:          t = t[_isin(t["GRUPO_EDAD1"], v_ge)]
-    if "Rango_edad_aproximado" in t.columns:t = t[_isin(t["Rango_edad_aproximado"], v_rango)]
+    if "AÑO" in t.columns:                   t = t[_isin(t["AÑO"], v_ano)]
+    if "Mes_texto" in t.columns:             t = t[_isin(t["Mes_texto"], v_mes)]
+    if "DEPARTAMENTO" in t.columns:          t = t[_isin(t["DEPARTAMENTO"], v_dpto)]
+    if "MUNICIPIO" in t.columns:             t = t[_isin(t["MUNICIPIO"], v_mun)]
+    if "SEXO" in t.columns:                  t = t[_isin(t["SEXO"], v_sexo)]
+    if "Estado_civil" in t.columns:          t = t[_isin(t["Estado_civil"], v_ec)]
+    if "GRUPO_EDAD1" in t.columns:           t = t[_isin(t["GRUPO_EDAD1"], v_ge)]
+    if "Rango_edad_aproximado" in t.columns: t = t[_isin(t["Rango_edad_aproximado"], v_rango)]
 
     if dpto_clicked and "DEPARTAMENTO" in t.columns:
         t = t[t["DEPARTAMENTO"] == dpto_clicked]
@@ -412,29 +425,29 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
     total_mapa = int(data_mapa["Total"].sum()) if not data_mapa.empty else 0
     fig_mapa = add_total_annotation(fig_mapa, total_mapa)
 
-    # --- GRÁFICO DE LÍNEA 
+    # --- GRÁFICO DE LÍNEA
     data_mes = total_por_mes(fdf)
     fig_linea = px.line(data_mes, x="Mes_texto", y="Total", height=380)
     fig_linea.update_traces(line=dict(color="#FBB800"), mode="lines+markers")
-    
+
     # Etiquetas con offset dinámico
     y_vals = data_mes["Total"].astype(float).tolist() if not data_mes.empty else []
     x_vals = data_mes["Mes_texto"].tolist() if not data_mes.empty else []
-    
+
     if y_vals:
         rango = max(y_vals) - min(y_vals) if len(set(y_vals)) > 1 else (y_vals[0] if y_vals[0] else 1)
     else:
         rango = 1.0
-    
+
     offset = max(rango * 0.02, 1.0)
     y_text = []
-    
+
     for i, y in enumerate(y_vals):
         prev_y = y_vals[i-1] if i > 0 else y_vals[i]
         next_y = y_vals[i+1] if i < len(y_vals)-1 else y_vals[i]
         tendencia = (next_y - prev_y)
         y_text.append(y + offset if tendencia >= 0 else y - offset)
-    
+
     fig_linea.add_trace(go.Scatter(
         x=x_vals,
         y=y_text,
@@ -445,7 +458,7 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
         hoverinfo="skip",
         showlegend=False
     ))
-    
+
     fig_linea.update_layout(
         paper_bgcolor=COLOR_BG1,
         plot_bgcolor=COLOR_BG1,
@@ -504,7 +517,7 @@ def update_all(v_ano, v_mes, v_dpto, v_mun, v_sexo, v_ec, v_ge, v_rango, dpto_cl
     total_pie = int(data_pie["Total"].sum()) if not data_pie.empty else 0
     fig_pie = add_total_annotation(fig_pie, total_pie)
 
-    # --- TABLA TOP 10 CAUSAS (con fila de total; sin etiqueta superior)
+    # --- TABLA TOP 10 CAUSAS
     use_x95 = isinstance(mun_clicked, dict) and mun_clicked.get("source") == "violentas"
     fdf_for_top = filter_cod_x95(fdf) if use_x95 else fdf
     data_top = top_10_causas(fdf_for_top).copy()
