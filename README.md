@@ -23,6 +23,6 @@ python app.py
 
 Abrir http://127.0.0.1:8050
 
-## Despliegue en Render
+## Despliegue en Azure App Services
 - Variables: `PATH_EXCEL=data/datos.xlsx` 
-- Inicio: `web: gunicorn app:server` (Procfile).
+- Inicio: `web: gunicorn app:server --workers 4 --threads 2 --timeout 600 --access-logfile - --error-logfile - --log-level info
