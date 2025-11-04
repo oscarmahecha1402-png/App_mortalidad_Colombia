@@ -9,7 +9,7 @@
 ## Estructura
 - `app.py` — App Dash (lee un único Excel en `data/datos.xlsx` con 4 hojas: `Fallecimientos`, `Descripcion_cod_fall`, `Dep_mun`, `Ubi_Dep_mun`).
 - `data/` — `datos.xlsx`.
-- `requirements.txt`, `Procfile`, `render.yaml` 
+- `requirements.txt`, `Procfile`, `appservice-deploy.yml` 
 
 ## Ejecución local
 ```bash
